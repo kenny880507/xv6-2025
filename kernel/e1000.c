@@ -104,7 +104,18 @@ e1000_transmit(char *buf, int len)
   // return -1 on failure (e.g., there is no descriptor available)
   // so that the caller knows to free buf.
   //
+  printf("e1000_transmit is invoked.\n");
+  uint32 decs_idx = regs[E1000_TDT];
+  printf("tail descriptor index: %d\n", decs_idx);
+  printf("tail descriptor address: %p\n",&tx_ring[decs_idx]);
+  printf("DD: %d\n",tx_ring[decs_idx].status & E1000_TXD_STAT_DD);
 
+  if(!(tx_ring[decs_idx].status & E1000_TXD_STAT_DD)){
+    return -1;
+  } else {
+    printf("buffer address: %p\n",(void*)tx_ring[decs_idx].addr);
+  }
+  
   
   return 0;
 }
