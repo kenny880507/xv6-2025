@@ -104,19 +104,24 @@ e1000_transmit(char *buf, int len)
   // return -1 on failure (e.g., there is no descriptor available)
   // so that the caller knows to free buf.
   //
-  printf("e1000_transmit is invoked.\n");
+  acquire(&e1000_lock);
+  // printf("e1000_transmit() is invoked.\n");
   uint32 decs_idx = regs[E1000_TDT];
-  printf("tail descriptor index: %d\n", decs_idx);
-  printf("tail descriptor address: %p\n",&tx_ring[decs_idx]);
-  printf("DD: %d\n",tx_ring[decs_idx].status & E1000_TXD_STAT_DD);
+  // printf("tail descriptor index: %d\n", decs_idx);
+  // printf("tail descriptor address: %p\n",&tx_ring[decs_idx]);
+  // printf("DD: %d\n",tx_ring[decs_idx].status & E1000_TXD_STAT_DD);
 
   if(!(tx_ring[decs_idx].status & E1000_TXD_STAT_DD)){
+    release(&e1000_lock);
     return -1;
-  } else {
-    printf("buffer address: %p\n",(void*)tx_ring[decs_idx].addr);
   }
-  
-  
+  if(tx_ring[decs_idx].addr != 0) kfree((void*)tx_ring[decs_idx].addr);
+  tx_ring[decs_idx].addr = (uint64)buf;
+  tx_ring[decs_idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_ring[decs_idx].status = 0;
+  tx_ring[decs_idx].length = len;
+  regs[E1000_TDT] = (regs[E1000_TDT]+1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
@@ -129,7 +134,19 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
-
+  // printf("e1000_recv() is invoked.\n");
+  while(1){
+    uint32 decs_idx = (regs[E1000_RDT]+1)%RX_RING_SIZE;
+    if(!(rx_ring[decs_idx].status & E1000_RXD_STAT_DD)){
+      return;
+    }
+    char* buf = (char*)rx_ring[decs_idx].addr;
+    int len = rx_ring[decs_idx].length;
+    rx_ring[decs_idx].addr = (uint64)kalloc();
+    rx_ring[decs_idx].status = 0;
+    regs[E1000_RDT] = decs_idx;
+    net_rx(buf,len);
+  }
 }
 
 void
