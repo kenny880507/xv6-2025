@@ -25,6 +25,29 @@ netinit(void)
   initlock(&netlock, "netlock");
 }
 
+#define MAX_PAC_NUM 16
+#define MAX_PORT_NUM 16
+
+struct packet{
+  uint32 ip_src;
+  uint16 sport;
+  char* buf;
+  int payload_len;
+};
+
+struct port_entry{
+  int valid;
+  int port;
+  struct packet pac_array[MAX_PAC_NUM];
+  int head_pac;
+  int tail_pac;
+  int pac_num;
+};
+
+static struct{
+  struct port_entry ports[MAX_PORT_NUM];
+  // int bound_port_num;
+}bound_ports;
 
 //
 // bind(int port)
@@ -37,7 +60,18 @@ sys_bind(void)
   //
   // Your code here.
   //
-
+  int port;
+  argint(0,&port);
+  for(int i=0; i<MAX_PORT_NUM; i++){
+    if(bound_ports.ports[i].valid == 0){
+      bound_ports.ports[i].port = port;
+      bound_ports.ports[i].head_pac = 0;
+      bound_ports.ports[i].tail_pac = 0;
+      bound_ports.ports[i].valid = 1;
+      bound_ports.ports[i].pac_num = 0;
+      return 0;
+    }
+  }
   return -1;
 }
 
@@ -52,7 +86,17 @@ sys_unbind(void)
   //
   // Optional: Your code here.
   //
-
+  int port;
+  argint(0,&port);
+  for(int i=0; i<MAX_PORT_NUM; i++){
+    if(bound_ports.ports[i].port == port){
+      bound_ports.ports[i].port = -1;
+      bound_ports.ports[i].head_pac = 0;
+      bound_ports.ports[i].tail_pac = 0;
+      bound_ports.ports[i].valid = 0;
+      bound_ports.ports[i].pac_num = 0;
+    }
+  }
   return 0;
 }
 
@@ -77,7 +121,54 @@ sys_recv(void)
   //
   // Your code here.
   //
-  return -1;
+  int dport; argint(0, &dport);
+  uint64 srcaddr; argaddr(1, &srcaddr);
+  uint64 sportaddr; argaddr(2, &sportaddr);
+  uint64 bufaddr; argaddr(3, &bufaddr);
+  int maxlen; argint(4, &maxlen);
+
+  acquire(&netlock);
+  int port_idx = -1;
+  for(int i=0; i<MAX_PORT_NUM; i++){
+    if((bound_ports.ports[i].valid) && (bound_ports.ports[i].port == dport))
+      port_idx = i;
+  }
+  if(port_idx == -1){
+    release(&netlock);
+    return -1;
+  }
+
+  struct port_entry* target_port = &bound_ports.ports[port_idx];
+  
+  while(target_port->pac_num==0){
+    sleep(target_port,&netlock);
+  }
+
+  struct packet target_pac = target_port->pac_array[target_port->head_pac];
+  target_port->head_pac = (target_port->head_pac + 1) % MAX_PAC_NUM;
+  target_port->pac_num--;
+
+  release(&netlock);
+
+
+  struct proc *p = myproc();
+  if(copyout(p->pagetable,srcaddr,(char*)&target_pac.ip_src,sizeof(target_pac.ip_src)) < 0){
+    kfree(target_pac.buf);
+    return -1;
+  }
+  if(copyout(p->pagetable,sportaddr,(char*)&target_pac.sport,sizeof(target_pac.sport)) < 0){
+    kfree(target_pac.buf);
+    return -1;
+  }
+  char* payload = target_pac.buf + sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp);
+  int copylen = target_pac.payload_len < maxlen ? target_pac.payload_len : maxlen;
+  if(copyout(p->pagetable,bufaddr,payload,copylen) < 0){
+    kfree(target_pac.buf);
+    return -1;
+  }
+  
+  kfree(target_pac.buf);
+  return target_pac.payload_len;  
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -191,7 +282,31 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
-  
+  struct ip* ip_ptr = (struct ip*)((uint64)buf+sizeof(struct eth));
+  if(!(ip_ptr->ip_p == IPPROTO_UDP)){
+    kfree(buf);
+    return;
+  }
+  struct udp* udp_ptr = (struct udp*)(ip_ptr+1);
+  int found = 0;
+  for(int i=0; i<MAX_PORT_NUM; i++){
+    if(bound_ports.ports[i].valid && bound_ports.ports[i].port == ntohs(udp_ptr->dport)){
+      if(bound_ports.ports[i].pac_num == 16){
+        kfree(buf);
+        return;
+      } 
+      found = 1;
+      int tail = bound_ports.ports[i].tail_pac;
+      bound_ports.ports[i].pac_array[tail].buf = buf;
+      bound_ports.ports[i].pac_array[tail].payload_len = ntohs(udp_ptr->ulen) - sizeof(struct udp);
+      bound_ports.ports[i].pac_array[tail].ip_src = ntohl(ip_ptr->ip_src);
+      bound_ports.ports[i].pac_array[tail].sport = ntohs(udp_ptr->sport);
+      bound_ports.ports[i].tail_pac = (bound_ports.ports[i].tail_pac+1) % MAX_PAC_NUM;
+      bound_ports.ports[i].pac_num ++;
+      wakeup(&bound_ports.ports[i]);
+    }
+  }
+  if(!found) kfree(buf);
 }
 
 //
