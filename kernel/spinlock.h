@@ -10,11 +10,13 @@ struct spinlock {
   int n;
 #endif
 };
-
+// #define LAB_LOCK
 #ifdef LAB_LOCK
 // Reader-writer lock.
 struct rwspinlock {
   // Replace this with your implementation.
-  struct spinlock l;
+  struct spinlock rlk;
+  int writers;
+  int readers;
 };
 #endif
